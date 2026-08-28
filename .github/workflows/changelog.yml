@@ -1,0 +1,92 @@
+name: Update ChangeLog
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # tags such as v1.2.3
+      - 'v*.*.*-prerelease'  # tags such as v1.2.3
+  workflow_dispatch:
+  workflow_call:  # from release.yml
+
+permissions: read-all
+
+jobs:
+
+  build:
+    name: Build artifacts
+    uses: ./.github/workflows/build.yml
+
+  update-changelog:
+    name: Update ChangeLog
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      discussions: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            pdm-project.org:443
+            pdm.fming.dev:443
+            pypi.org:443
+            files.pythonhosted.org:443
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with: 
+            persist-credentials: true
+            fetch-depth: 0
+            ref: main
+      - name: Check whether changelog was already updated
+        id: changelog_check
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if grep -qE "^${TAG}[[:space:]]*\\(" ChangeLog.rst || \
+             grep -qF -- "- $TAG: automated release entry" ChangeLog.rst; then
+            echo "Changelog already contains entry for $TAG; skipping changelog commit."
+            echo "already_updated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_updated=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Setup PDM
+        if: steps.changelog_check.outputs.already_updated != 'true'
+        uses: pdm-project/setup-pdm@94a823180e06fcde4ad29308721954a521c96ed0 # v4
+        with:
+          python-version: "3.12"
+          cache: true
+      - name: Install dependencies
+        if: steps.changelog_check.outputs.already_updated != 'true'
+        run: pdm sync -G towncrier
+      - name: Build draft changelog
+        if: steps.changelog_check.outputs.already_updated != 'true'
+        run: pdm run towncrier build --yes
+      - name: Update ChangCHANGELOGeLog.rst & push
+        if: steps.changelog_check.outputs.already_updated != 'true'
+        shell: bash
+        run: |
+          # GITHUB_REF is "refs/tags/v1.2.3", strip the prefix:
+          TAG="${{ steps.changelog_check.outputs.tag }}"
+
+          echo "- $TAG: automated release entry on $(date +'%Y-%m-%d')" >> ChangeLog.rst
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add CHANGELOG.rst
+
+          if git diff --cached --quiet; then
+            echo "No changelog changes to commit."
+            exit 0
+          fi
+
+          git commit -m "docs: Updated CHANGELOG for tag $TAG [skip ci]"
+          git push
