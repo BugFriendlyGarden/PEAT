@@ -1,0 +1,1 @@
+fix: Added missing encrypt/decrypt examples to CLI and fixed exception when an invalid example is requested
